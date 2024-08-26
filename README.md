@@ -1,2 +1,2 @@
 # FLC-replication
-Can we replicate and paper?
+Can we replicate the results of this paper?
