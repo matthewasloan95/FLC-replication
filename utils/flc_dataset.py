@@ -9,8 +9,7 @@ from torchvision.transforms import v2
 from pycocotools.coco import COCO
 # for loading images
 import cv2
-# for quickly showing the image
-import matplotlib.pyplot as plt
+import numpy as np
 
 
 class FLCDataset(Dataset):
@@ -18,35 +17,24 @@ class FLCDataset(Dataset):
     def __init__(self, root_dir,
                  annotation_file, 
                  transform=None, 
-                 train=False,
-                 debug=False):
+                 train=False):
         
         # this debug flag will be used to make sure what I'm doing is correct and lining up
-        self.debug = debug
         self.root_dir = root_dir
         self.coco = COCO(annotation_file)
         self.ids = list(sorted(self.coco.imgs.keys()))
-        
-        # if transform is none we'll do the basic transforms
-        if transform is None:
-            # NOTE: if I end up resizing I should consider going to uint8 -> resize -> float32 and compare the speeds
-            self.transform = v2.Compose([
-                # this ToImage and ToDtype is the equivalent of the ToTensor transform
-                v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32)]),
-                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-        else:
-            self.transform = transform
+
+        self.transform = transform
             
         # now we need to make sure the annotations have matching ids and images
-        ids_with_anns = set(self.coco.getAnnIds(self.ids))
+        ids_with_anns = []
         for img_id in self.ids:
-            if img_id not in ids_with_anns:
-                self.ids.remove(img_id)
-        self.ids = list(sorted(self.ids))
+            ann_ids = self.coco.getAnnIds(imgIds=img_id)
+            if len(ann_ids) > 0:
+                ids_with_anns.append(img_id)
+        self.ids = ids_with_anns
         
         self.train = train
-        
 
     # len
     def __len__(self):
@@ -64,10 +52,7 @@ class FLCDataset(Dataset):
         # load the image
         image = cv2.imread(f'{self.root_dir}/{image_data["file_name"]}')
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        # display the image inline
-        if self.debug:
-            print(f'idx: {idx} | image_data: {image_data}')
-            plt.imshow(image)
+        image = torch.from_numpy(image).permute(2, 0, 1)
             
         # ok now each image has a list of annotations
         ann_ids = self.coco.getAnnIds(imgIds=image_id)
@@ -76,30 +61,6 @@ class FLCDataset(Dataset):
         # each annotation has:
         # id, image_id, category_id, iscrowd, area, bbox, segmentation, width, height
         
-        if self.debug:
-            print(f'anns: {anns}') 
-            print(f'len(anns): {len} | len(anns[0]): {len(anns[0])}')
-            print(f'ann_ids: {ann_ids}')
-            print(f'len(ann_ids): {len(ann_ids)}')
-            print(f'keys:')
-            for ann in anns:
-                for key in ann.keys():
-                    print(f'{key}: {ann[key]}')
-                    
-            # show image with bbox's in plt, red for four leaf, blue for three leaf
-            for ann in anns:
-                bbox = ann['bbox']
-                x, y, w, h = bbox
-                color = 'r' if ann['category_id'] == 1 else 'b'
-                plt.gca().add_patch(plt.Rectangle((x, y), w, h, fill=False, edgecolor=color, linewidth=2))
-                # add the label in white with black border
-                plt.text(x, y, f'{ann["category_id"]}', color='white', bbox=dict(facecolor='black', alpha=0.5))
-                
-            # show image with masks in plt, purple for four leaf, black for three leaf
-            for ann in anns:
-                mask = self.coco.annToMask(ann)
-                color = 'purple' if ann['category_id'] == 1 else 'black'
-                plt.imshow(mask, alpha=0.5)#, alpha=0.33, cmap='gray')
                 
         # now we know we have the format down, let's create the target dict
         boxes = []
@@ -113,6 +74,25 @@ class FLCDataset(Dataset):
             mask = self.coco.annToMask(ann) # glad coco has this function
             masks.append(mask)
             
+        # we're working with tensors
+        #TODO: check out torchvision.tv_tensors.BoundingBoxes and torchvision.tv_tensors.Masks
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
+        masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
+            
+        target = {
+            'boxes': boxes,
+            'labels': labels,
+            'masks': masks,
+            'image_id': torch.tensor([image_id])
+        }
         
-        plt.show()
-        return 1
+        for k, v in target.items():
+            # if v is not a tensor
+            if not torch.is_tensor(v):
+                target[k] = torch.tensor(v)
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, target
