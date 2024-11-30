@@ -94,5 +94,7 @@ class FLCDataset(Dataset):
         
         if self.transform:
             image = self.transform(image)
+        else:
+            image = image/255.0
         
         return image, target
