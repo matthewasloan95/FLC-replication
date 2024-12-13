@@ -17,7 +17,8 @@ class FLCDataset(Dataset):
     def __init__(self, root_dir,
                  annotation_file, 
                  transform=None, 
-                 train=False):
+                 is_semantic=False,
+                 is_training=False):
         
         # this debug flag will be used to make sure what I'm doing is correct and lining up
         self.root_dir = root_dir
@@ -25,6 +26,7 @@ class FLCDataset(Dataset):
         self.ids = list(sorted(self.coco.imgs.keys()))
 
         self.transform = transform
+        self.is_semantic = is_semantic
             
         # now we need to make sure the annotations have matching ids and images
         ids_with_anns = []
@@ -33,8 +35,7 @@ class FLCDataset(Dataset):
             if len(ann_ids) > 0:
                 ids_with_anns.append(img_id)
         self.ids = ids_with_anns
-        
-        self.train = train
+        self.is_training = is_training
 
     # len
     def __len__(self):
@@ -51,50 +52,69 @@ class FLCDataset(Dataset):
         
         # load the image
         image = cv2.imread(f'{self.root_dir}/{image_data["file_name"]}')
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = torch.from_numpy(image).permute(2, 0, 1)
-            
-        # ok now each image has a list of annotations
-        ann_ids = self.coco.getAnnIds(imgIds=image_id)
-        anns = self.coco.loadAnns(ann_ids)
-        
-        # each annotation has:
-        # id, image_id, category_id, iscrowd, area, bbox, segmentation, width, height
-        
-                
-        # now we know we have the format down, let's create the target dict
-        boxes = []
-        labels = []
-        masks = []
-        for ann in anns:
-            bbox = ann['bbox']
-            x, y, w, h = bbox
-            boxes.append([x, y, x+w, y+h]) # x, y, width, height where xy is upper left corner
-            labels.append(ann['category_id'])
-            mask = self.coco.annToMask(ann) # glad coco has this function
-            masks.append(mask)
-            
-        # we're working with tensors
-        #TODO: check out torchvision.tv_tensors.BoundingBoxes and torchvision.tv_tensors.Masks
-        boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        labels = torch.as_tensor(labels, dtype=torch.int64)
-        masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
-            
-        target = {
-            'boxes': boxes,
-            'labels': labels,
-            'masks': masks,
-            'image_id': torch.tensor([image_id])
-        }
-        
-        for k, v in target.items():
-            # if v is not a tensor
-            if not torch.is_tensor(v):
-                target[k] = torch.tensor(v)
-        
+        img_height, img_width = image.shape[1], image.shape[2]
+
         if self.transform:
             image = self.transform(image)
         else:
             image = image/255.0
+            
+        # ok now each image has a list of annotations
+        ann_ids = self.coco.getAnnIds(imgIds=image_id)
+        anns = self.coco.loadAnns(ann_ids)
+
+        # for semantic, we need masks where the individual pixels are the class types instead of individual masks
+        if self.is_semantic:
+          # first we need the right shape
+          segmentation_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+
+          # now get the data and assign the class
+          for ann in anns:
+            mask = self.coco.annToMask(ann)
+            category_id = ann['category_id']
+            segmentation_mask[mask == 1] = category_id
+          
+          # make sure it's a tensor
+          segmentation_mask = torch.from_numpy(segmentation_mask).long()
+
+          return image, segmentation_mask
+        else:
         
-        return image, target
+          # each annotation has:
+          # id, image_id, category_id, iscrowd, area, bbox, segmentation, width, height
+              
+          # now we know we have the format down, let's create the target dict
+          boxes = []
+          labels = []
+          masks = []
+          for ann in anns:
+              bbox = ann['bbox']
+              x, y, w, h = bbox
+              boxes.append([x, y, x+w, y+h]) # x, y, width, height where xy is upper left corner
+              labels.append(ann['category_id'])
+              mask = self.coco.annToMask(ann) # glad coco has this function
+              masks.append(mask)
+              
+          # we're working with tensors
+          #TODO: check out torchvision.tv_tensors.BoundingBoxes and torchvision.tv_tensors.Masks
+          boxes = torch.as_tensor(boxes, dtype=torch.float32)
+          labels = torch.as_tensor(labels, dtype=torch.int64)
+          masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
+              
+          target = {
+              'boxes': boxes,
+              'labels': labels,
+              'masks': masks,
+              'image_id': torch.tensor([image_id]),
+              'original_size': [img_height, img_width]
+          }
+          
+          if self.is_training:
+            for k, v in target.items():
+                # if v is not a tensor
+                if not torch.is_tensor(v):
+                    target[k] = torch.tensor(v)
+          
+          
+          return image, target
