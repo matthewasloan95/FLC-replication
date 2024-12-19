@@ -52,6 +52,8 @@ class FLCDataset(Dataset):
         
         # load the image
         image = cv2.imread(f'{self.root_dir}/{image_data["file_name"]}')
+        # convert to RGB
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = torch.from_numpy(image).permute(2, 0, 1)
         img_height, img_width = image.shape[1], image.shape[2]
 
